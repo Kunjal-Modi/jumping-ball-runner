@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jumping Ball Runner</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Comic+Neue:wght@700&display=swap');
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; 
+    background: #87ceeb; /* sky blue */
+    font-family: 'Comic Neue', cursive, sans-serif;
+    user-select: none;
+  }
+  #gameCanvas {
+    display: block;
+    margin: 0 auto;
+    background: linear-gradient(to bottom, #87ceeb 60%, #4ca64c 40%);
+    border: 4px solid #333;
+    box-shadow: 0 0 20px #66ccff;
+    image-rendering: pixelated;
+  }
+  #ui {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: white;
+    text-shadow: 2px 2px 5px #000;
+    font-size: 22px;
+    font-weight: 700;
+    z-index: 10;
+    user-select: none;
+  }
+  #retryBtn {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #ff6f61;
+    border: none;
+    border-radius: 12px;
+    padding: 15px 35px;
+    font-size: 24px;
+    font-weight: 700;
+    color: white;
+    cursor: pointer;
+    box-shadow: 0 5px 15px #e04f4f;
+    display: none;
+    user-select: none;
+  }
+  #retryBtn:hover {
+    background: #ff4f3d;
+  }
+</style>
+</head>
+<body>
+<div id="ui">Score: 0 | High Score: 0</div>
+<button id="retryBtn">Retry</button>
+<canvas id="gameCanvas" width="800" height="400"></canvas>
+
+<script>
+// Setup canvas
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const width = canvas.width;
+const height = canvas.height;
+
+// UI elements
+const scoreDisplay = document.getElementById('ui');
+const retryBtn = document.getElementById('retryBtn');
+
+// Sounds (using Web Audio API simple synth sounds)
+const AudioContext = window.AudioContext || window.webkitAudioContext;
+const audioCtx = new AudioContext();
+
+function playSound(freq, type = 'square', duration = 0.15, volume = 0.15) {
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime + duration);
+}
+
+// Game variables
+let gameSpeed = 5;
+let gravity = 0.6;
+let jumpForce = 13;
+let score = 0;
+let highScore = localStorage.getItem('jumpingBallHighScore') || 0;
+let gameOver = false;
+
+// Background layers for parallax scrolling
+const bgLayers = [
+  {color: '#a3d7ff', speedFactor: 0.2, y: 0, height: 100, offsetX: 0},
+  {color: '#70b742', speedFactor: 0.4, y: 300, height: 100, offsetX: 0},
+  {color: '#3d8a2a', speedFactor: 0.7, y: 350, height: 50, offsetX: 0}
+];
+
+// Player (ball)
+const ball = {
+  x: 100,
+  y: 0,
+  radius: 30,
+  vy: 0,
+  onGround: false,
+  color: '#ffdd57',
+  strokeColor: '#ffab00',
+  eyeColor: '#000',
+  mouthOpen: false,
+  mouthTimer: 0
+};
+
+// Obstacles array
+const obstacles = [];
+const obstacleColors = ['#ff6f61', '#ffbd4f', '#4f86f7', '#a64ca6'];
+
+// Utility: random integer between min and max inclusive
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Create new obstacle
+function createObstacle() {
+  const size = randInt(30, 60);
+  obstacles.push({
+    x: width + size,
+    y: height - size - 40,
+    width: size,
+    height: size,
+    color: obstacleColors[randInt(0, obstacleColors.length - 1)],
+    passed: false
+  });
+}
+
+// Draw ball with cartoon style
+function drawBall() {
+  const b = ball;
+  
+  // Body
+  ctx.fillStyle = b.color;
+  ctx.strokeStyle = b.strokeColor;
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.ellipse(b.x, b.y, b.radius, b.radius * 0.9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  
+  // Eyes
+  const eyeOffsetX = b.radius * 0.4;
+  const eyeOffsetY = -b.radius * 0.2;
+  ctx.fillStyle = b.eyeColor;
+  ctx.beginPath();
+  ctx.ellipse(b.x - eyeOffsetX, b.y + eyeOffsetY, 7, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(b.x + eyeOffsetX, b.y + eyeOffsetY, 7, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pupils (animated)
+  const pupilShift = Math.sin(Date.now() / 150) * 2;
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.ellipse(b.x - eyeOffsetX + pupilShift, b.y + eyeOffsetY + 2, 3.5, 5, 0, 0, Math.PI * 2);
+  ctx.ellipse(b.x + eyeOffsetX + pupilShift, b.y + eyeOffsetY + 2, 3.5, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Mouth (smile or open)
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (b.mouthOpen) {
+    // Open mouth (small oval)
+    ctx.ellipse(b.x, b.y + b.radius * 0.4, 15, 10, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    // Smile (arc)
+    ctx.arc(b.x, b.y + b.radius * 0.3, 18, 0, Math.PI, false);
+    ctx.stroke();
+  }
+}
+
+// Draw obstacles cartoonishly
+function drawObstacle(ob) {
+  ctx.fillStyle = ob.color;
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  // Rounded rectangle
+  const r = 10;
+  ctx.moveTo(ob.x + r, ob.y);
+  ctx.lineTo(ob.x + ob.width - r, ob.y);
+  ctx.quadraticCurveTo(ob.x + ob.width, ob.y, ob.x + ob.width, ob.y + r);
+  ctx.lineTo(ob.x + ob.width, ob.y + ob.height - r);
+  ctx.quadraticCurveTo(ob.x + ob.width, ob.y + ob.height, ob.x + ob.width - r, ob.y + ob.height);
+  ctx.lineTo(ob.x + r, ob.y + ob.height);
+  ctx.quadraticCurveTo(ob.x, ob.y + ob.height, ob.x, ob.y + ob.height - r);
+  ctx.lineTo(ob.x, ob.y + r);
+  ctx.quadraticCurveTo(ob.x, ob.y, ob.x + r, ob.y);
+  ctx.fill();
+  ctx.stroke();
+
+  // Eyes on obstacle (make them funny)
+  const eyeY = ob.y + ob.height * 0.3;
+  const eyeX1 = ob.x + ob.width * 0.3;
+  const eyeX2 = ob.x + ob.width * 0.7;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.ellipse(eyeX1, eyeY, 8, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(eyeX2, eyeY, 8, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(eyeX1 + 3, eyeY + 2, 4, 6, 0, 0, Math.PI * 2);
+  ctx.ellipse(eyeX2 + 3, eyeY + 2, 4, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Mouth - silly grin
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(ob.x + ob.width * 0.3, ob.y + ob.height * 0.75);
+  ctx.quadraticCurveTo(
+    ob.x + ob.width * 0.5, 
+    ob.y + ob.height * 0.85, 
+    ob.x + ob.width * 0.7, 
+    ob.y + ob.height * 0.75
+  );
+  ctx.stroke();
+}
+
+// Draw background layers with parallax
+function drawBackground() {
+  bgLayers.forEach(layer => {
+    layer.offsetX -= gameSpeed * layer.speedFactor;
+    if (layer.offsetX < -width) layer.offsetX += width;
+    // Draw two side by side rectangles to create looping effect
+    ctx.fillStyle = layer.color;
+    ctx.fillRect(layer.offsetX, layer.y, width, layer.height);
+    ctx.fillRect(layer.offsetX + width, layer.y, width, layer.height);
+
+    // Add simple cartoon shapes on background for fun
+    if (layer.speedFactor > 0.5) {
+      // Draw some trees (simplified)
+      const treeX1 = (layer.offsetX + 150) % width;
+      const treeX2 = (layer.offsetX + 450) % width;
+      drawTree(treeX1, layer.y);
+      drawTree(treeX2, layer.y);
+    }
+  });
+}
+
+function drawTree(x, baseY) {
+  const trunkHeight = 30;
+  const trunkWidth = 10;
+  // trunk
+  ctx.fillStyle = '#6b4226';
+  ctx.fillRect(x, baseY + 50 - trunkHeight, trunkWidth, trunkHeight);
+  // leaves (3 circles)
+  ctx.fillStyle = '#1aa33a';
+  ctx.beginPath();
+  ctx.ellipse(x + trunkWidth/2, baseY + 50 - trunkHeight - 15, 25, 35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + trunkWidth/2 - 20, baseY + 50 - trunkHeight - 5, 25, 35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + trunkWidth/2 + 20, baseY + 50 - trunkHeight - 5, 25, 35, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Collision detection rectangle-circle
+function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
+  // Find closest point to circle within rectangle
+  let closestX = Math.max(rx, Math.min(cx, rx + rw));
+  let closestY = Math.max(ry, Math.min(cy, ry + rh));
+  // Calculate distance between circle center and closest point
+  let dx = cx - closestX;
+  let dy = cy - closestY;
+  return (dx * dx + dy * dy) < (r * r);
+}
+
+// Handle input
+let jumpPressed = false;
+function jump() {
+  if (!ball.onGround || gameOver) return;
+  ball.vy = -jumpForce;
+  ball.onGround = false;
+  ball.mouthOpen = true;
+  ball.mouthTimer = 8;
+  playSound(880, 'square', 0.15, 0.15); // jump sound
+}
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    jump();
+  }
+  if (gameOver && e.code === 'Enter') {
+    restartGame();
+  }
+});
+
+// Touch for mobile
+window.addEventListener('touchstart', e => {
+  e.preventDefault();
+  jump();
+}, {passive: false});
+
+// Game loop variables
+let lastTime = 0;
+let obstacleTimer = 0;
+let obstacleInterval = 1400; // milliseconds between obstacles, decreases to increase difficulty
+
+// Game loop
+function gameLoop(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  const delta = timestamp - lastTime;
+  lastTime = timestamp;
+
+  update(delta);
+  draw();
+
+  if (!gameOver) {
+    requestAnimationFrame(gameLoop);
+  }
+}
+
+function update(delta) {
+  // Increase speed gradually
+  gameSpeed += 0.0005 * delta;
+
+  // Background layers update offset in drawBackground()
+
+  // Ball physics
+  ball.vy += gravity * (delta / 16);
+  ball.y += ball.vy * (delta / 16);
+  if (ball.y > height - ball.radius - 40) {
+    ball.y = height - ball.radius - 40;
+    ball.vy = 0;
+    ball.onGround = true;
+  }
+
+  // Mouth animation timer
+  if (ball.mouthTimer > 0) {
+    ball.mouthTimer -= delta / 16;
+    if (ball.mouthTimer <= 0) {
+      ball.mouthOpen = false;
+    }
+  }
+
+  // Obstacles movement & collision
+  obstacleTimer += delta;
+  if (obstacleTimer > obstacleInterval) {
+    obstacleTimer = 0;
+    createObstacle();
+    // Gradually decrease interval to increase difficulty (minimum 600ms)
+    obstacleInterval = Math.max(600, obstacleInterval - 10);
+  }
+
+  obstacles.forEach(ob => {
+    ob.x -= gameSpeed * (delta / 16);
+
+    // Check if passed player for scoring
+    if (!ob.passed && ob.x + ob.width < ball.x - ball.radius) {
+      ob.passed = true;
+      score++;
+      playSound(1200, 'triangle', 0.1, 0.12); // point beep
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('jumpingBallHighScore', highScore);
+      }
+    }
+
+    // Collision
+    if (circleRectCollision(ball.x, ball.y, ball.radius - 4, ob.x, ob.y, ob.width, ob.height)) {
+      playSound(100, 'sawtooth', 0.6, 0.3); // crash sound
+      endGame();
+    }
+  });
+
+  // Remove offscreen obstacles
+  while (obstacles.length && obstacles[0].x + obstacles[0].width < -10) {
+    obstacles.shift();
+  }
+}
+
+function draw() {
+  // Clear canvas
+  ctx.clearRect(0, 0, width, height);
+
+  // Draw backgrounds (parallax)
+  drawBackground();
+
+  // Draw ground line
+  ctx.fillStyle = '#3e722e';
+  ctx.fillRect(0, height - 40, width, 40);
+
+  // Draw obstacles
+  obstacles.forEach(drawObstacle);
+
+  // Draw ball
+  drawBall();
+
+  // Draw score on canvas (shadowed)
+  ctx.font = 'bold 28px Comic Neue, cursive';
+  ctx.fillStyle = 'white';
+  ctx.shadowColor = 'black';
+  ctx.shadowBlur = 5;
+  ctx.fillText(`Score: ${score}`, 20, 40);
+  ctx.fillText(`High Score: ${highScore}`, 600, 40);
+  ctx.shadowBlur = 0;
+}
+
+// Game Over
+function endGame() {
+  gameOver = true;
+  retryBtn.style.display = 'block';
+  scoreDisplay.textContent = `Game Over! Your Score: ${score} | High Score: ${highScore}`;
+}
+
+// Restart game
+function restartGame() {
+  gameSpeed = 5;
+  score = 0;
+  obstacles.length = 0;
+  ball.y = height - ball.radius - 40;
+  ball.vy = 0;
+  ball.onGround = true;
+  gameOver = false;
+  obstacleInterval = 1400;
+  retryBtn.style.display = 'none';
+  scoreDisplay.textContent = `Score: 0 | High Score: ${highScore}`;
+  lastTime = 0;
+  requestAnimationFrame(gameLoop);
+}
+
+// Retry button event
+retryBtn.addEventListener('click', () => {
+  restartGame();
+});
+
+// Start the game
+restartGame();
+
+</script>
+</body>
+</html>
